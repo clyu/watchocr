@@ -16,14 +16,18 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -61,7 +65,26 @@ fun HistoryScreen() {
         return
     }
 
+    val listState = rememberLazyListState()
+    var lastTopId by remember { mutableStateOf<Long?>(null) }
+
+    // Records are ordered newest-first; whenever a new record becomes the top
+    // one (e.g. the background monitor added a result while the app was in
+    // another app or backgrounded), jump the list back to the top so it's visible.
+    LaunchedEffect(records) {
+        val newTopId = records.firstOrNull()?.id
+        if (newTopId != null && newTopId != lastTopId) {
+            if (lastTopId == null) {
+                listState.scrollToItem(0)
+            } else {
+                listState.animateScrollToItem(0)
+            }
+            lastTopId = newTopId
+        }
+    }
+
     LazyColumn(
+        state = listState,
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
         modifier = Modifier.fillMaxSize()
