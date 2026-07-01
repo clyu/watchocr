@@ -5,6 +5,12 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+// CI passes -PappVersionCode/-PappVersionName (e.g. from the GitHub Actions run number)
+// so every push produces a strictly higher versionCode and can upgrade an existing install.
+// Locally these default to fixed values.
+val ciVersionCode = (project.findProperty("appVersionCode") as String?)?.toIntOrNull() ?: 1
+val ciVersionName = project.findProperty("appVersionName") as String? ?: "1.0"
+
 android {
     namespace = "com.watchocr.app"
     compileSdk = 34
@@ -13,14 +19,27 @@ android {
         applicationId = "com.watchocr.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = ciVersionCode
+        versionName = ciVersionName
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // Optimized build, but debug-signed so CI can produce an installable/upgradable APK
+            // without managing a release keystore.
+            signingConfig = signingConfigs.getByName("debug")
+        }
+    }
+
+    applicationVariants.all {
+        if (buildType.name == "release") {
+            outputs.all {
+                val output = this as com.android.build.gradle.internal.api.BaseVariantOutputImpl
+                output.outputFileName = "WatchOCR.apk"
+            }
         }
     }
 

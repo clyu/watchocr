@@ -12,7 +12,7 @@ private val Context.dataStore by preferencesDataStore(name = "watchocr_settings"
 data class AppSettings(
     val directoryUri: String? = null,
     val apiKey: String = "",
-    val model: String = "gemini-2.5-flash"
+    val model: String = "gemini-3.1-flash-lite"
 )
 
 class SettingsDataStore(private val context: Context) {
@@ -27,7 +27,7 @@ class SettingsDataStore(private val context: Context) {
         AppSettings(
             directoryUri = prefs[Keys.DIRECTORY_URI],
             apiKey = prefs[Keys.API_KEY] ?: "",
-            model = prefs[Keys.MODEL] ?: "gemini-2.5-flash"
+            model = prefs[Keys.MODEL] ?: "gemini-3.1-flash-lite"
         )
     }
 
