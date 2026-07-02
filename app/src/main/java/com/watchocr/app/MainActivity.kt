@@ -95,8 +95,8 @@ fun WatchOcrApp(ocrViewModel: ManualOcrViewModel = viewModel()) {
         }
     }
 
-    LaunchedEffect(settings.directoryUri, settings.apiKey) {
-        if (!settings.directoryUri.isNullOrBlank() && settings.apiKey.isNotBlank()) {
+    LaunchedEffect(settings.bucketId, settings.apiKey) {
+        if (settings.bucketId != null && settings.apiKey.isNotBlank()) {
             DirectoryMonitorService.start(context)
         }
     }

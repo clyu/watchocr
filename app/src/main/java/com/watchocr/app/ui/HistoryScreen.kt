@@ -57,7 +57,7 @@ fun HistoryScreen() {
     if (records.isEmpty()) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text(
-                "No OCR history yet.\nTap + to pick an image, or set a watched directory in Settings.",
+                "No OCR history yet.\nTap + to pick an image, or set a watched folder in Settings.",
                 modifier = Modifier.padding(32.dp),
                 textAlign = TextAlign.Center
             )

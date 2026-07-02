@@ -6,14 +6,15 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.net.Uri
+import android.database.ContentObserver
 import android.os.Build
 import android.os.IBinder
+import android.provider.MediaStore
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
-import androidx.documentfile.provider.DocumentFile
 import com.watchocr.app.NotificationChannels
 import com.watchocr.app.data.AppDatabase
+import com.watchocr.app.data.MediaStoreImages
 import com.watchocr.app.data.MonitoredFile
 import com.watchocr.app.data.SettingsDataStore
 import com.watchocr.app.ocr.OcrProcessor
@@ -22,16 +23,18 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * Foreground service that polls a user-selected SAF directory for newly created
- * image files and runs each new file through [OcrProcessor]. On its first ever
- * poll it records existing files as a baseline without processing them, so only
- * files created afterwards trigger OCR.
+ * Foreground service that watches a user-selected MediaStore bucket (folder)
+ * for newly added images and runs each one through [OcrProcessor]. A
+ * [ContentObserver] on the images collection triggers a scan as soon as
+ * MediaStore changes; a periodic fallback sweep covers missed notifications.
+ * Only images added after the folder was selected are processed.
  */
 class DirectoryMonitorService : Service() {
 
@@ -41,6 +44,15 @@ class DirectoryMonitorService : Service() {
     /** Last processing error, kept visible in the idle notification until a file succeeds. */
     private var lastErrorText: String? = null
 
+    /** Signalled by [contentObserver] whenever the images collection changes. */
+    private val changeSignal = Channel<Unit>(Channel.CONFLATED)
+
+    private val contentObserver = object : ContentObserver(null) {
+        override fun onChange(selfChange: Boolean) {
+            changeSignal.trySend(Unit)
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         val notification = buildNotification("Watching for new images…")
@@ -49,6 +61,11 @@ class DirectoryMonitorService : Service() {
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
+        contentResolver.registerContentObserver(
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            true,
+            contentObserver
+        )
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -66,6 +83,7 @@ class DirectoryMonitorService : Service() {
     }
 
     override fun onDestroy() {
+        contentResolver.unregisterContentObserver(contentObserver)
         monitorJob?.cancel()
         serviceScope.cancel()
         super.onDestroy()
@@ -77,95 +95,71 @@ class DirectoryMonitorService : Service() {
 
         while (serviceScope.isActive) {
             val settings = settingsDataStore.settingsFlow.first()
-            val dirUriString = settings.directoryUri
-            val apiKey = settings.apiKey
+            val bucketId = settings.bucketId
 
-            if (dirUriString.isNullOrBlank() || apiKey.isBlank()) {
+            if (bucketId == null || settings.apiKey.isBlank()) {
                 stopSelf()
                 return
             }
 
             try {
-                val isBaselineRun = !settings.baselineDone
-                val directoryListed = pollDirectory(Uri.parse(dirUriString), apiKey, settings.model, db, isBaselineRun)
-                if (isBaselineRun && directoryListed) {
-                    settingsDataStore.setBaselineDone(true)
-                }
+                scanBucket(bucketId, settings.watchStartMillis, settings.apiKey, settings.model, db)
             } catch (e: Exception) {
                 updateNotification("Monitor error: ${e.message}")
             }
 
-            delay(POLL_INTERVAL_MS)
+            // Scan again as soon as MediaStore reports a change, or after the
+            // fallback interval in case a change notification was missed.
+            withTimeoutOrNull(FALLBACK_SCAN_INTERVAL_MS) { changeSignal.receive() }
         }
     }
 
-    /**
-     * Scans the directory once. During a baseline run new files are only
-     * recorded, not processed. Returns false when the directory could not be
-     * listed, so a pending baseline is not marked as done prematurely.
-     */
-    private suspend fun pollDirectory(
-        treeUri: Uri,
+    private suspend fun scanBucket(
+        bucketId: Long,
+        watchStartMillis: Long,
         apiKey: String,
         model: String,
-        db: AppDatabase,
-        isBaselineRun: Boolean
-    ): Boolean {
-        val treeDoc = DocumentFile.fromTreeUri(applicationContext, treeUri) ?: return false
-        val imageFiles = treeDoc.listFiles().filter { it.isFile && isImage(it) }
-
+        db: AppDatabase
+    ) {
+        val images = MediaStoreImages.queryBucketImages(applicationContext, bucketId, watchStartMillis)
         val dao = db.monitoredFileDao()
         val knownFiles = dao.getAll().associateBy { it.documentUri }
 
-        for (file in imageFiles) {
-            val uriString = file.uri.toString()
+        // Pre-Q MediaStore has no IS_PENDING flag, so a row can appear while the
+        // file is still being written; require its size to be stable across two
+        // scans before processing. On Q+ pending rows are excluded from queries.
+        val requireStableSize = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
+
+        for (image in images) {
+            val uriString = image.uri.toString()
             val known = knownFiles[uriString]
 
-            if (isBaselineRun) {
-                if (known == null) {
-                    dao.insert(MonitoredFile(uriString, file.lastModified(), processed = true))
-                }
-                continue
-            }
-
             if (known == null) {
-                // First sighting: record a size/mtime snapshot and wait for the
-                // next poll to confirm the file is no longer being written.
-                dao.insert(MonitoredFile(uriString, file.lastModified(), processed = false, sizeBytes = file.length()))
-                continue
-            }
-            if (known.processed || known.failedAttempts > MAX_RETRIES) continue
-
-            val lastModified = file.lastModified()
-            val sizeBytes = file.length()
-            if (lastModified != known.lastModified || sizeBytes != known.sizeBytes) {
-                // Still being written; refresh the snapshot and check again next poll.
-                dao.insert(known.copy(lastModified = lastModified, sizeBytes = sizeBytes))
-                continue
+                dao.insert(
+                    MonitoredFile(uriString, image.dateAddedMillis, processed = false, sizeBytes = image.sizeBytes)
+                )
+                if (requireStableSize) continue
+            } else {
+                if (known.processed || known.failedAttempts > MAX_RETRIES) continue
+                if (requireStableSize && image.sizeBytes != known.sizeBytes) {
+                    // Still being written; refresh the snapshot and check again next scan.
+                    dao.insert(known.copy(sizeBytes = image.sizeBytes))
+                    continue
+                }
             }
 
-            updateNotification("Processing ${file.name}…")
-            val result = OcrProcessor.processImage(applicationContext, file.uri, apiKey, model)
+            updateNotification("Processing ${image.displayName}…")
+            val result = OcrProcessor.processImage(applicationContext, image.uri, apiKey, model)
             result.onSuccess {
                 dao.markProcessed(uriString)
                 lastErrorText = null
             }.onFailure {
                 dao.incrementFailedAttempts(uriString)
-                lastErrorText = "Failed to process ${file.name}: ${it.message}"
+                lastErrorText = "Failed to process ${image.displayName}: ${it.message}"
             }
         }
 
-        if (!isBaselineRun) {
-            updateNotification(lastErrorText ?: "Watching for new images…")
-        }
-        return true
-    }
-
-    private fun isImage(doc: DocumentFile): Boolean {
-        val mimeType = doc.type
-        if (mimeType != null && mimeType.startsWith("image/")) return true
-        val name = doc.name?.lowercase().orEmpty()
-        return name.endsWith(".jpg") || name.endsWith(".jpeg") || name.endsWith(".png")
+        updateNotification(lastErrorText ?: "Watching for new images…")
     }
 
     private fun buildNotification(text: String): Notification {
@@ -191,10 +185,15 @@ class DirectoryMonitorService : Service() {
 
     companion object {
         private const val NOTIFICATION_ID = 1001
-        private const val POLL_INTERVAL_MS = 5000L
 
-        /** A failed file is retried on later polls at most this many times. */
+        /** A failed file is retried on later scans at most this many times. */
         private const val MAX_RETRIES = 3
+
+        // The ContentObserver is the primary trigger on Q+, where this sweep is
+        // only a safety net. Pre-Q it also drives the size-stability check, so
+        // it has to stay short there.
+        private val FALLBACK_SCAN_INTERVAL_MS =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) 60_000L else 5_000L
 
         fun start(context: Context) {
             ContextCompat.startForegroundService(context, Intent(context, DirectoryMonitorService::class.java))
