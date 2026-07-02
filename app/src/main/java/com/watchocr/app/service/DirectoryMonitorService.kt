@@ -112,18 +112,31 @@ class DirectoryMonitorService : Service() {
         val imageFiles = treeDoc.listFiles().filter { it.isFile && isImage(it) }
 
         val dao = db.monitoredFileDao()
-        val knownUris = dao.getAllUris().toHashSet()
+        val knownFiles = dao.getAll().associateBy { it.documentUri }
 
         for (file in imageFiles) {
             val uriString = file.uri.toString()
-            if (uriString in knownUris) continue
+            val known = knownFiles[uriString]
 
-            dao.insert(MonitoredFile(uriString, file.lastModified()))
-            if (isBaselineRun) continue
+            if (isBaselineRun) {
+                if (known == null) {
+                    dao.insert(MonitoredFile(uriString, file.lastModified(), processed = true))
+                }
+                continue
+            }
+
+            if (known == null) {
+                dao.insert(MonitoredFile(uriString, file.lastModified(), processed = false))
+            } else if (known.processed || known.failedAttempts > MAX_RETRIES) {
+                continue
+            }
 
             updateNotification("Processing ${file.name}…")
             val result = OcrProcessor.processImage(applicationContext, file.uri, apiKey, model)
-            result.onFailure {
+            result.onSuccess {
+                dao.markProcessed(uriString)
+            }.onFailure {
+                dao.incrementFailedAttempts(uriString)
                 updateNotification("Failed to process ${file.name}: ${it.message}")
             }
         }
@@ -164,6 +177,9 @@ class DirectoryMonitorService : Service() {
     companion object {
         private const val NOTIFICATION_ID = 1001
         private const val POLL_INTERVAL_MS = 5000L
+
+        /** A failed file is retried on later polls at most this many times. */
+        private const val MAX_RETRIES = 3
 
         fun start(context: Context) {
             ContextCompat.startForegroundService(context, Intent(context, DirectoryMonitorService::class.java))
