@@ -129,8 +129,18 @@ class DirectoryMonitorService : Service() {
             }
 
             if (known == null) {
-                dao.insert(MonitoredFile(uriString, file.lastModified(), processed = false))
-            } else if (known.processed || known.failedAttempts > MAX_RETRIES) {
+                // First sighting: record a size/mtime snapshot and wait for the
+                // next poll to confirm the file is no longer being written.
+                dao.insert(MonitoredFile(uriString, file.lastModified(), processed = false, sizeBytes = file.length()))
+                continue
+            }
+            if (known.processed || known.failedAttempts > MAX_RETRIES) continue
+
+            val lastModified = file.lastModified()
+            val sizeBytes = file.length()
+            if (lastModified != known.lastModified || sizeBytes != known.sizeBytes) {
+                // Still being written; refresh the snapshot and check again next poll.
+                dao.insert(known.copy(lastModified = lastModified, sizeBytes = sizeBytes))
                 continue
             }
 

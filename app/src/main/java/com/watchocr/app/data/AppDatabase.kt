@@ -7,7 +7,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [OcrRecord::class, MonitoredFile::class], version = 2, exportSchema = false)
+@Database(entities = [OcrRecord::class, MonitoredFile::class], version = 3, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun ocrRecordDao(): OcrRecordDao
     abstract fun monitoredFileDao(): MonitoredFileDao
@@ -26,13 +26,20 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        // v3 adds the file size snapshot used to detect files still being written.
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE monitored_files ADD COLUMN sizeBytes INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun getInstance(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
                     context.applicationContext,
                     AppDatabase::class.java,
                     "watchocr.db"
-                ).addMigrations(MIGRATION_1_2).build().also { INSTANCE = it }
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build().also { INSTANCE = it }
             }
         }
     }
