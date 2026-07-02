@@ -57,6 +57,11 @@ class DirectoryMonitorService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        stopSelf()
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onDestroy() {
         monitorJob?.cancel()
         serviceScope.cancel()
