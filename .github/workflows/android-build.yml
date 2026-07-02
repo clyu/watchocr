@@ -3,7 +3,19 @@ name: Android Build
 on:
   push:
     branches: [ main ]
+    paths:
+      - ".github/workflows/android-build.yml"
+      - "app/**"
+      - "build.gradle.kts"
+      - "gradle.properties"
+      - "settings.gradle.kts"
   pull_request:
+    paths:
+      - ".github/workflows/android-build.yml"
+      - "app/**"
+      - "build.gradle.kts"
+      - "gradle.properties"
+      - "settings.gradle.kts"
   workflow_dispatch:
 
 jobs:
