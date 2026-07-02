@@ -25,6 +25,9 @@ object GeminiClient {
     private const val PROMPT =
         "Extract text from the image, translate it to Traditional Chinese, and explain any idioms or slang."
 
+    /** Error details shown to the user (snackbar/notification) are capped at this length. */
+    private const val MAX_ERROR_DETAIL_CHARS = 200
+
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(120, TimeUnit.SECONDS)
@@ -49,7 +52,7 @@ object GeminiClient {
                 val bodyString = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
                     return@withContext Result.failure(
-                        Exception("API request failed with HTTP ${response.code}: $bodyString")
+                        Exception("API request failed with HTTP ${response.code}: ${extractApiError(bodyString)}")
                     )
                 }
                 parseResponse(bodyString)
@@ -107,14 +110,19 @@ object GeminiClient {
     private fun parseResponse(body: String): Result<GeminiOcrResult> {
         val root = JSONObject(body)
         val candidates = root.optJSONArray("candidates")
-            ?: return Result.failure(Exception("No candidates in API response: $body"))
-        if (candidates.length() == 0) {
-            return Result.failure(Exception("Empty candidates in API response: $body"))
+        if (candidates == null || candidates.length() == 0) {
+            val blockReason = root.optJSONObject("promptFeedback")?.optString("blockReason").orEmpty()
+            return Result.failure(
+                Exception(
+                    if (blockReason.isNotEmpty()) "Request was blocked by the API (reason: $blockReason)."
+                    else "API response contained no candidates."
+                )
+            )
         }
-        val parts = candidates.getJSONObject(0)
-            .optJSONObject("content")
-            ?.optJSONArray("parts")
-            ?: return Result.failure(Exception("No content parts in API response: $body"))
+        val candidate = candidates.getJSONObject(0)
+        val finishReason = candidate.optString("finishReason")
+        val parts = candidate.optJSONObject("content")?.optJSONArray("parts")
+            ?: return Result.failure(Exception(noTextMessage(finishReason)))
 
         var rawText: String? = null
         for (i in 0 until parts.length()) {
@@ -126,9 +134,7 @@ object GeminiClient {
         }
 
         if (rawText.isNullOrEmpty()) {
-            return Result.failure(
-                Exception("Failed to parse valid text from API response. Check if the model blocked the request. Full response: $body")
-            )
+            return Result.failure(Exception(noTextMessage(finishReason)))
         }
 
         // Strip Markdown code block markers (e.g. ```json) some models mistakenly append.
@@ -136,7 +142,16 @@ object GeminiClient {
             .filterNot { it.trim().startsWith("```") }
             .joinToString("\n")
 
-        val resultJson = JSONObject(cleanedJson)
+        val resultJson = try {
+            JSONObject(cleanedJson)
+        } catch (e: Exception) {
+            return Result.failure(
+                Exception(
+                    if (finishReason == "MAX_TOKENS") "Model response was truncated (MAX_TOKENS)."
+                    else "Model returned malformed JSON: ${cleanedJson.take(MAX_ERROR_DETAIL_CHARS)}"
+                )
+            )
+        }
         val analysisArray = resultJson.optJSONArray("analysis")
         val analysis = mutableListOf<String>()
         if (analysisArray != null) {
@@ -152,5 +167,22 @@ object GeminiClient {
                 analysis = analysis
             )
         )
+    }
+
+    private fun noTextMessage(finishReason: String): String =
+        if (finishReason.isNotEmpty() && finishReason != "STOP") {
+            "API returned no text (finishReason: $finishReason)."
+        } else {
+            "API returned no text."
+        }
+
+    /** Pulls the human-readable `error.message` out of an API error body, if present. */
+    private fun extractApiError(body: String): String {
+        val message = try {
+            JSONObject(body).optJSONObject("error")?.optString("message")
+        } catch (e: Exception) {
+            null
+        }
+        return message.takeUnless { it.isNullOrBlank() } ?: body.take(MAX_ERROR_DETAIL_CHARS)
     }
 }

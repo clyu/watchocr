@@ -110,7 +110,8 @@ fun WatchOcrApp() {
             val result = OcrProcessor.processImage(context, uri, settings.apiKey, settings.model)
             isProcessing = false
             result.onFailure {
-                snackbarHostState.showSnackbar("OCR failed: ${it.message}")
+                val reason = it.message.orEmpty().ifBlank { it.javaClass.simpleName }.take(200)
+                snackbarHostState.showSnackbar("OCR failed: $reason")
             }
         }
     }
