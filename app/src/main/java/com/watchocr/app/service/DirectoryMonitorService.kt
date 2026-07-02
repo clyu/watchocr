@@ -83,7 +83,11 @@ class DirectoryMonitorService : Service() {
             }
 
             try {
-                pollDirectory(Uri.parse(dirUriString), apiKey, settings.model, db)
+                val isBaselineRun = !settings.baselineDone
+                val directoryListed = pollDirectory(Uri.parse(dirUriString), apiKey, settings.model, db, isBaselineRun)
+                if (isBaselineRun && directoryListed) {
+                    settingsDataStore.setBaselineDone(true)
+                }
             } catch (e: Exception) {
                 updateNotification("Monitor error: ${e.message}")
             }
@@ -92,12 +96,22 @@ class DirectoryMonitorService : Service() {
         }
     }
 
-    private suspend fun pollDirectory(treeUri: Uri, apiKey: String, model: String, db: AppDatabase) {
-        val treeDoc = DocumentFile.fromTreeUri(applicationContext, treeUri) ?: return
+    /**
+     * Scans the directory once. During a baseline run new files are only
+     * recorded, not processed. Returns false when the directory could not be
+     * listed, so a pending baseline is not marked as done prematurely.
+     */
+    private suspend fun pollDirectory(
+        treeUri: Uri,
+        apiKey: String,
+        model: String,
+        db: AppDatabase,
+        isBaselineRun: Boolean
+    ): Boolean {
+        val treeDoc = DocumentFile.fromTreeUri(applicationContext, treeUri) ?: return false
         val imageFiles = treeDoc.listFiles().filter { it.isFile && isImage(it) }
 
         val dao = db.monitoredFileDao()
-        val isBaselineRun = dao.count() == 0
         val knownUris = dao.getAllUris().toHashSet()
 
         for (file in imageFiles) {
@@ -117,6 +131,7 @@ class DirectoryMonitorService : Service() {
         if (!isBaselineRun) {
             updateNotification("Watching for new images…")
         }
+        return true
     }
 
     private fun isImage(doc: DocumentFile): Boolean {

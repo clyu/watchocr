@@ -14,9 +14,6 @@ interface MonitoredFileDao {
     @Query("SELECT documentUri FROM monitored_files")
     suspend fun getAllUris(): List<String>
 
-    @Query("SELECT COUNT(*) FROM monitored_files")
-    suspend fun count(): Int
-
     @Query("DELETE FROM monitored_files")
     suspend fun clear()
 }
