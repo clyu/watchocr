@@ -23,10 +23,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -37,6 +39,7 @@ import androidx.documentfile.provider.DocumentFile
 import com.watchocr.app.data.AppDatabase
 import com.watchocr.app.data.AppSettings
 import com.watchocr.app.data.SettingsDataStore
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 @Composable
@@ -44,10 +47,23 @@ fun SettingsScreen(settingsDataStore: SettingsDataStore, settings: AppSettings) 
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    var apiKey by remember(settings.apiKey) { mutableStateOf(settings.apiKey) }
-    var model by remember(settings.model) { mutableStateOf(settings.model) }
+    // The text fields own their state and are seeded from DataStore exactly once.
+    // Keying remember on the round-tripped settings value would let a stale
+    // DataStore emission reset the field mid-typing and drop keystrokes.
+    var apiKey by rememberSaveable { mutableStateOf(settings.apiKey) }
+    var model by rememberSaveable { mutableStateOf(settings.model) }
+    var seededFromStore by rememberSaveable { mutableStateOf(false) }
     var apiKeyVisible by remember { mutableStateOf(false) }
     val directoryLabel = remember(settings.directoryUri) { directoryDisplayName(context, settings.directoryUri) }
+
+    LaunchedEffect(Unit) {
+        if (!seededFromStore) {
+            val stored = settingsDataStore.settingsFlow.first()
+            apiKey = stored.apiKey
+            model = stored.model
+            seededFromStore = true
+        }
+    }
 
     val directoryPickerLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
